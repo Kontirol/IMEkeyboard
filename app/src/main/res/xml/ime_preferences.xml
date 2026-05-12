@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="utf-8"?>
+<PreferenceScreen xmlns:android="http://schemas.android.com/apk/res/android"
+    android:title="@string/uyghur_ime_settings">
+
+    <PreferenceCategory
+        android:title="基本设置">
+        
+        <android.preference.CheckBoxPreference
+            android:key="sound_on"
+            android:title="按键声音"
+            android:summary="按键时发出声音"
+            android:defaultValue="true" />
+            
+        <android.preference.CheckBoxPreference
+            android:key="vibration_on"
+            android:title="按键震动"
+            android:summary="按键时产生震动反馈"
+            android:defaultValue="false" />
+            
+        <android.preference.CheckBoxPreference
+            android:key="auto_capitalize"
+            android:title="自动大写"
+            android:summary="句首自动切换大写"
+            android:defaultValue="false" />
+            
+    </PreferenceCategory>
+
+    <PreferenceCategory
+        android:title="键盘显示">
+        
+        <android.preference.CheckBoxPreference
+            android:key="show_candidates"
+            android:title="显示候选词"
+            android:summary="在键盘上方显示输入建议"
+            android:defaultValue="true" />
+            
+        <android.preference.CheckBoxPreference
+            android:key="preview_popup"
+            android:title="按键预览"
+            android:summary="按键时显示字符预览"
+            android:defaultValue="true" />
+            
+    </PreferenceCategory>
+
+    <PreferenceCategory
+        android:title="关于">
+        
+        <Preference
+            android:title="版本"
+            android:summary="1.0.0" />
+            
+        <Preference
+            android:title="开发者"
+            android:summary="Kontirol Team" />
+            
+    </PreferenceCategory>
+
+</PreferenceScreen>

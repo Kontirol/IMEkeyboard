@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 键盘暗色主题 -->
+    <color name="keyboard_background">#FF1C1C1E</color>
+    <color name="candidate_background">#FF2C2C2E</color>
+    <color name="candidate_text_color">#FFFFFFFF</color>
+    <color name="key_background">#FF2C2C2E</color>
+    <color name="key_text_color">#FFFFFFFF</color>
+    <color name="key_special_background">#FF3A3A3C</color>
+    <color name="key_pressed_background">#FF555557</color>
+    <color name="popup_background">#FF0A84FF</color>
+
+    <!-- App UI -->
+    <color name="blue_primary">#FF42A5F5</color>
+    <color name="blue_light">#FF90CAF9</color>
+    <color name="blue_dark">#FF1E88E5</color>
+    <color name="white">#FFFFFFFF</color>
+    <color name="black">#FF1A1A1A</color>
+    <color name="bg">#FFFFFFFF</color>
+    <color name="text_primary">#FF1A1A1A</color>
+    <color name="text_secondary">#FF8E8E93</color>
+    <color name="text_tertiary">#FFC7C7CC</color>
+    <color name="divider">#FFE5E5EA</color>
+    <color name="card_white">#FFFFFFFF</color>
+</resources>

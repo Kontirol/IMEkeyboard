@@ -1,0 +1,8 @@
+<resources>
+    <string name="app_name">Ctrl键盘</string>
+    <string name="uyghur_ime_name">Ctrl键盘</string>
+    <string name="uyghur_ime_settings">键盘设置</string>
+    <string name="uyghur_ime_subtype">Ctrl键盘</string>
+    <string name="ime_settings">输入法设置</string>
+    <string name="select_input_method">选择输入法</string>
+</resources>

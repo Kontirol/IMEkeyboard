@@ -1,4 +1,4 @@
-package com.example.kontirol
+﻿package com.example.kontirol
 
 import android.inputmethodservice.InputMethodService
 import android.util.Log
@@ -29,14 +29,28 @@ class CtrlInputMethodService : InputMethodService() {
     private var candidateNextBtn: TextView? = null
     private var allCandidates = listOf<String>()
     private var candidatePage = 0
-    private var activeSyllable: String? = null
     private var langSwitch: TextView? = null
     private var pinyinBuffer = StringBuilder()
-    private val pinyinEngine = PinyinEngine()
-    private var dictLoader: DictLoader? = null
+
+    private var gEngine: GooglePinyinEngine? = null
+    private var ktEngine: PinyinEngine? = null
+    private var ktDict: DictLoader? = null
+    private var useGoogle = false
+
+    // 增量同步：记录已同步到引擎的字符数，避免每次 reset+重建
+    private var enginePos = 0
 
     override fun onCreateInputView(): View {
-        try { dictLoader = DictLoader(resources.assets) } catch (_: Exception) {}
+        try {
+            val ge = GooglePinyinEngine(this)
+            if (ge.init()) { gEngine = ge; useGoogle = true }
+        } catch (_: Exception) {}
+
+        if (!useGoogle) {
+            try { ktDict = DictLoader(resources.assets) } catch (_: Exception) {}
+            ktEngine = PinyinEngine()
+        }
+
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL; setBackgroundColor(Color.parseColor("#D1D3D9"))
         }
@@ -66,7 +80,7 @@ class CtrlInputMethodService : InputMethodService() {
         }
         candidateNextBtn = TextView(this).apply {
             layoutParams = LinearLayout.LayoutParams(dp2px(32), LinearLayout.LayoutParams.MATCH_PARENT)
-            gravity = Gravity.CENTER; text = "›"; textSize = 20f
+            gravity = Gravity.CENTER; text = ">"; textSize = 20f
             setTypeface(null, Typeface.BOLD); setTextColor(Color.parseColor("#8E8E93"))
             visibility = View.GONE; setOnClickListener { nextCandidatePage() }
         }
@@ -94,9 +108,7 @@ class CtrlInputMethodService : InputMethodService() {
         loadKeyboardLayout(); return root
     }
 
-    private fun modeLabelText() = when (currentMode) {
-        MODE_UYGHUR -> "ئۇ"; MODE_ENGLISH -> "EN"; MODE_CHINESE -> "中"; else -> "EN"
-    }
+    private fun modeLabelText() = when (currentMode) { MODE_UYGHUR -> "ئۇ"; MODE_ENGLISH -> "EN"; MODE_CHINESE -> "中"; else -> "EN" }
 
     private fun loadKeyboardLayout() {
         when (currentKeyboardType) {
@@ -112,72 +124,167 @@ class CtrlInputMethodService : InputMethodService() {
     }
 
     private fun safeHandleKey(key: KeyDef, isLong: Boolean) {
-        try { handleKey(key, isLong) } catch (e: Exception) { Log.e(TAG, "err", e) }
+        try { handleKey(key, isLong) } catch (e: Exception) { Log.e(TAG, "handleKey", e) }
     }
 
     private fun handleKey(key: KeyDef, isLong: Boolean) {
         val code = key.code; val ic = currentInputConnection
         when (code) {
             -1 -> keyboardView?.toggleShift()
-            -3 -> { if (currentMode == MODE_CHINESE && pinyinBuffer.isNotEmpty()) { pinyinBuffer.deleteCharAt(pinyinBuffer.length - 1); updateCandidates() } else ic?.deleteSurroundingText(1, 0) }
+            -3 -> {
+                if (currentMode == MODE_CHINESE && pinyinBuffer.isNotEmpty()) {
+                    pinyinBuffer.deleteCharAt(pinyinBuffer.length - 1)
+                    fullSyncEngine()
+                    updateCandidates()
+                } else ic?.deleteSurroundingText(1, 0)
+            }
             -2 -> { commitPinyinBuffer(); ic?.sendKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_ENTER)); ic?.sendKeyEvent(KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_ENTER)) }
-            -5 -> { if (currentMode == MODE_CHINESE && pinyinBuffer.isNotEmpty() && allCandidates.isNotEmpty()) selectCandidate(0) else ic?.commitText(" ", 1); keyboardView?.resetShift() }
+            -5 -> {
+                when {
+                    currentMode == MODE_CHINESE && pinyinBuffer.isNotEmpty() && allCandidates.isNotEmpty() -> selectCandidate(0)
+                    currentMode == MODE_CHINESE && pinyinBuffer.isNotEmpty() -> commitPinyinBuffer()
+                    else -> ic?.commitText(" ", 1)
+                }
+                keyboardView?.resetShift()
+            }
             -6 -> { commitPinyinBuffer(); currentKeyboardType = if (currentKeyboardType == "main") "number" else "main"; loadKeyboardLayout() }
-            -7 -> { currentKeyboardType = if (currentKeyboardType == "symbol") "main" else "symbol"; loadKeyboardLayout() }
-            -4 -> { commitPinyinBuffer(); currentMode = if (currentMode == MODE_UYGHUR) MODE_ENGLISH else MODE_UYGHUR; currentKeyboardType = "main"; langSwitch?.text = modeLabelText(); loadKeyboardLayout() }
+            -7 -> { commitPinyinBuffer(); currentKeyboardType = if (currentKeyboardType == "symbol") "main" else "symbol"; loadKeyboardLayout() }
+            -4 -> cycleLanguage()
             else -> {
                 if (currentMode == MODE_CHINESE && currentKeyboardType == "main" && code > 0) {
                     val c = code.toChar()
-                    if (c.isLetter()) { pinyinBuffer.append(c.lowercaseChar()); updateCandidates(); if (allCandidates.isEmpty()) commitPinyinBuffer() }
-                    else { commitPinyinBuffer(); ic?.commitText(c.toString(), 1) }
+                    if (c.isLetter()) {
+                        pinyinBuffer.append(c.lowercaseChar())
+                        incrSyncEngine(c.lowercaseChar())
+                        updateCandidates()
+                    } else {
+                        commitPinyinBuffer()
+                        ic?.commitText(c.toString(), 1)
+                    }
                 } else if (currentMode == MODE_ENGLISH && keyboardView?.isShifted == true && code > 0) {
-                    ic?.commitText(code.toChar().uppercaseChar().toString(), 1); keyboardView?.resetShift()
+                    ic?.commitText(code.toChar().uppercaseChar().toString(), 1)
+                    keyboardView?.resetShift()
                 } else if (code > 0) {
-                    ic?.commitText(code.toChar().toString(), 1); if (keyboardView?.isShifted == true) keyboardView?.resetShift()
+                    ic?.commitText(code.toChar().toString(), 1)
+                    if (keyboardView?.isShifted == true) keyboardView?.resetShift()
                 }
             }
         }
     }
 
-    private fun updateCandidates() {
-        if (currentMode == MODE_CHINESE && pinyinBuffer.isNotEmpty()) {
-            activeSyllable = pinyinEngine.getActiveSyllable(pinyinBuffer.toString())
-            val rawChars = pinyinEngine.getCandidates(pinyinBuffer.toString(), limit = 100)
-            allCandidates = dictLoader?.getCandidates(pinyinBuffer.toString(), activeSyllable, rawChars, limit = 100) ?: rawChars
-            candidatePage = 0; pinyinLabel?.text = pinyinBuffer.toString()
-            renderCandidatePage(); candidateArea?.visibility = View.VISIBLE
-        } else {
-            activeSyllable = null; allCandidates = emptyList(); candidatePage = 0; pinyinLabel?.text = ""
-            for (i in 0 until CANDIDATES_PER_PAGE) candidateTexts[i]?.text = ""
-            candidateNextBtn?.visibility = View.GONE; candidateArea?.visibility = View.GONE
+    // 增量同步：只追加新字母，不重建
+    private fun incrSyncEngine(ch: Char) {
+        if (!useGoogle) return
+        val engine = gEngine ?: return
+        try {
+            if (enginePos != pinyinBuffer.length - 1) {
+                // 引擎不同步（删过字/切过模式等），全量重建
+                fullSyncEngine()
+                return
+            }
+            engine.addLetter(ch)
+            enginePos++
+        } catch (e: Exception) {
+            Log.e(TAG, "incrSync", e)
+            enginePos = 0
         }
+    }
+
+    // 全量重建：reset + 逐字添加
+    private fun fullSyncEngine() {
+        if (!useGoogle) return
+        val engine = gEngine ?: return
+        try {
+            engine.reset()
+            enginePos = 0
+            for (ch in pinyinBuffer) {
+                engine.addLetter(ch)
+                enginePos++
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "fullSync", e)
+            enginePos = 0
+        }
+    }
+
+    private fun updateCandidates() {
+        if (currentMode != MODE_CHINESE || pinyinBuffer.isEmpty()) { hideCandidates(); return }
+        try {
+            if (useGoogle && gEngine != null) {
+                allCandidates = gEngine!!.getCandidates(32)
+                pinyinLabel?.text = gEngine!!.getPyStr(true) ?: pinyinBuffer.toString()
+            } else {
+                val seg = ktEngine?.segment(pinyinBuffer.toString()) ?: run { hideCandidates(); return }
+                val completed = seg.completed; val active = seg.active
+                val words = ktDict?.getCandidates(completed, active, limit = 50) ?: emptyList()
+                if (words.isNotEmpty()) {
+                    allCandidates = words
+                    pinyinLabel?.text = completed.joinToString(" ") + if (active.isNotEmpty()) " $active" else ""
+                } else if (completed.size >= 2 && active.isEmpty()) {
+                    allCandidates = getCharCandidates(completed[0])
+                    pinyinLabel?.text = "[" + completed[0] + "] " + completed.drop(1).joinToString(" ")
+                } else if (completed.size == 1 && active.isEmpty()) {
+                    allCandidates = getCharCandidates(completed[0])
+                    pinyinLabel?.text = completed[0]
+                } else if (active.isNotEmpty()) {
+                    allCandidates = ktDict?.getCharCandidatesByPrefix(active, limit = 12) ?: emptyList()
+                    pinyinLabel?.text = completed.joinToString(" ").let { if (it.isNotEmpty()) "$it $active" else active }
+                } else { allCandidates = emptyList(); pinyinLabel?.text = pinyinBuffer.toString() }
+            }
+            candidatePage = 0
+            renderCandidatePage()
+            candidateArea?.visibility = View.VISIBLE
+        } catch (e: Exception) {
+            Log.e(TAG, "updateCandidates", e)
+            hideCandidates()
+        }
+    }
+
+    private fun getCharCandidates(syl: String): List<String> {
+        return ktDict?.charDict?.get(syl)?.take(50)?.map { it.first } ?: emptyList()
+    }
+
+    private fun hideCandidates() {
+        allCandidates = emptyList(); candidatePage = 0; pinyinLabel?.text = ""
+        for (i in 0 until CANDIDATES_PER_PAGE) candidateTexts[i]?.text = ""
+        candidateNextBtn?.visibility = View.GONE; candidateArea?.visibility = View.GONE
     }
 
     private fun renderCandidatePage() {
         val start = candidatePage * CANDIDATES_PER_PAGE
-        val pageItems = allCandidates.drop(start).take(CANDIDATES_PER_PAGE)
-        for (i in 0 until CANDIDATES_PER_PAGE) candidateTexts[i]?.text = pageItems.getOrNull(i) ?: ""
+        val page = allCandidates.drop(start).take(CANDIDATES_PER_PAGE)
+        for (i in 0 until CANDIDATES_PER_PAGE) candidateTexts[i]?.text = page.getOrNull(i) ?: ""
         candidateNextBtn?.visibility = if (start + CANDIDATES_PER_PAGE < allCandidates.size) View.VISIBLE else View.GONE
     }
 
     private fun nextCandidatePage() {
-        val totalPages = (allCandidates.size + CANDIDATES_PER_PAGE - 1) / CANDIDATES_PER_PAGE
-        candidatePage = (candidatePage + 1) % totalPages; renderCandidatePage()
+        val tp = (allCandidates.size + CANDIDATES_PER_PAGE - 1) / CANDIDATES_PER_PAGE
+        candidatePage = (candidatePage + 1) % tp; renderCandidatePage()
     }
 
     private fun selectCandidate(index: Int) {
         if (index >= allCandidates.size) return
-        currentInputConnection?.commitText(allCandidates[index], 1)
-        val syl = activeSyllable
-        if (syl != null) {
-            val idx = pinyinBuffer.lastIndexOf(syl)
-            if (idx >= 0) pinyinBuffer.delete(idx, pinyinBuffer.length) else pinyinBuffer.clear()
-        } else pinyinBuffer.clear()
+        val sel = allCandidates[index]
+        if (sel.isEmpty()) return
+        try {
+            currentInputConnection?.commitText(sel, 1)
+        } catch (e: Exception) {
+            Log.e(TAG, "commitText", e)
+        }
+        pinyinBuffer.clear()
+        enginePos = 0
+        gEngine?.reset()
         updateCandidates()
     }
 
     private fun commitPinyinBuffer() {
-        if (pinyinBuffer.isNotEmpty()) { currentInputConnection?.commitText(pinyinBuffer.toString(), 1); pinyinBuffer.clear(); updateCandidates() }
+        if (pinyinBuffer.isNotEmpty()) {
+            currentInputConnection?.commitText(pinyinBuffer.toString(), 1)
+            pinyinBuffer.clear()
+            enginePos = 0
+            gEngine?.reset()
+            updateCandidates()
+        }
     }
 
     private fun cycleLanguage() {
@@ -188,5 +295,6 @@ class CtrlInputMethodService : InputMethodService() {
 
     override fun onStartInputView(info: EditorInfo?, restarting: Boolean) { super.onStartInputView(info, restarting); loadKeyboardLayout() }
     override fun onFinishInputView(finishingInput: Boolean) { super.onFinishInputView(finishingInput); commitPinyinBuffer() }
+    override fun onDestroy() { gEngine?.close(); super.onDestroy() }
     private fun dp2px(dp: Int): Int = (dp * resources.displayMetrics.density).toInt()
 }

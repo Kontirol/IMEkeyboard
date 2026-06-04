@@ -77,7 +77,7 @@ class CtrlKeyboardView @JvmOverloads constructor(
     override fun onMeasure(wms: Int, hms: Int) {
         val w = MeasureSpec.getSize(wms)
         val d = resources.displayMetrics.density
-        rowHeight = layout.rowHeightDp * d
+        rowHeight = layout.rowHeightDp * d + 10f
         val rows = layout.rows.size
         setMeasuredDimension(w, (rowHeight * rows + keyMarginV * 2 * (rows + 1)).toInt())
     }
@@ -180,7 +180,11 @@ class CtrlKeyboardView @JvmOverloads constructor(
         -2 -> "↵"; -3 -> "⌫"; -1 -> if (isShifted) "⇧" else "⇧"
         -6 -> "123"; -7 -> "#+="
         -4 -> if (layout == KeyboardLayouts.UYGHUR) "EN" else "ئۇ"
-        else -> if (isShifted && layout == KeyboardLayouts.ENGLISH) k.label.uppercase() else k.label
+        else -> when {
+            isShifted && layout == KeyboardLayouts.ENGLISH -> k.label.uppercase()
+            layout == KeyboardLayouts.CHINESE -> k.label.uppercase()
+            else -> k.label
+        }
     }
 
     private fun drawPopup(canvas: Canvas) {

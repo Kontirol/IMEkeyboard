@@ -32,7 +32,11 @@ class CtrlInputMethodService : InputMethodService() {
     private var candidateNextBtn: TextView? = null
     private var allCandidates = listOf<String>()
     private var candidatePage = 0
-    private var langSwitch: TextView? = null
+
+    // 三个语言标签
+    private var langLabelZh: TextView? = null
+    private var langLabelEn: TextView? = null
+    private var langLabelUg: TextView? = null
 
     // ===== 引擎 =====
     private var gEngine: GooglePinyinEngine? = null
@@ -74,7 +78,7 @@ class CtrlInputMethodService : InputMethodService() {
         }
         candidateArea = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp2px(40))
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp2px(44))
             setBackgroundColor(Color.parseColor("#E8E8ED")); gravity = Gravity.CENTER_VERTICAL
             setPadding(dp2px(8), 0, dp2px(4), 0); visibility = View.GONE
         }
@@ -103,30 +107,81 @@ class CtrlInputMethodService : InputMethodService() {
             visibility = View.GONE; setOnClickListener { nextCandidatePage() }
         }
         candidateArea?.addView(candidateNextBtn); root.addView(candidateArea)
+
+        // ===== 顶部语言切换栏 =====
         val modeBar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp2px(28))
-            setBackgroundColor(Color.parseColor("#D1D3D9")); gravity = Gravity.CENTER; setPadding(dp2px(12), 0, dp2px(12), 0)
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp2px(48))
+            setBackgroundColor(Color.parseColor("#D1D3D9")); gravity = Gravity.CENTER_VERTICAL; setPadding(dp2px(12), 0, dp2px(12), 0)
         }
+        // 左侧品牌
         modeBar.addView(TextView(this).apply {
             text = "Ctrl"; textSize = 10f; setTextColor(Color.parseColor("#8E8E93"))
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
         })
-        langSwitch = TextView(this).apply {
-            text = modeLabelText(); textSize = 13f; setTextColor(Color.parseColor("#000000"))
-            setPadding(dp2px(10), dp2px(3), dp2px(10), dp2px(3))
-            setBackgroundColor(Color.parseColor("#C0C2C8")); setOnClickListener { cycleLanguage() }
+
+        // 分隔符 |
+        val sep = { modeBar.addView(TextView(this).apply {
+            text = "|"; textSize = 12f; setTextColor(Color.parseColor("#A0A2AA"))
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+        })}
+
+        val langLabelStyle = { tv: TextView ->
+            tv.textSize = 13f; tv.setPadding(dp2px(8), dp2px(3), dp2px(8), dp2px(3))
+            tv.layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
         }
-        modeBar.addView(langSwitch); root.addView(modeBar)
+
+        // 中
+        langLabelZh = TextView(this).apply {
+            text = "中"; langLabelStyle(this)
+            setOnClickListener { switchTo(MODE_CHINESE) }
+        }
+        modeBar.addView(langLabelZh); sep()
+
+        // EN
+        langLabelEn = TextView(this).apply {
+            text = "EN"; langLabelStyle(this)
+            setOnClickListener { switchTo(MODE_ENGLISH) }
+        }
+        modeBar.addView(langLabelEn); sep()
+
+        // ئۇ
+        langLabelUg = TextView(this).apply {
+            text = "ئۇ"; langLabelStyle(this)
+            setOnClickListener { switchTo(MODE_UYGHUR) }
+        }
+        modeBar.addView(langLabelUg)
+
+        root.addView(modeBar)
         keyboardView = CtrlKeyboardView(this).apply {
             layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
             onKeyAction = { key, isLong -> safeHandleKey(key, isLong) }
         }
         root.addView(keyboardView)
-        loadKeyboardLayout(); return root
+        loadKeyboardLayout(); refreshLangHighlight()
+        return root
     }
 
-    private fun modeLabelText() = when (currentMode) { MODE_UYGHUR -> "ئۇ"; MODE_ENGLISH -> "EN"; MODE_CHINESE -> "中"; else -> "EN" }
+    private fun switchTo(mode: Int) {
+        if (currentMode == mode) return
+        commitPinyinBuffer()
+        currentMode = mode; currentKeyboardType = "main"
+        refreshLangHighlight(); loadKeyboardLayout()
+    }
+
+    private fun refreshLangHighlight() {
+        val selColor = Color.parseColor("#007AFF"); val selBg = Color.parseColor("#D0D4DB")
+        val normColor = Color.parseColor("#6E6E78"); val normBg = Color.TRANSPARENT
+
+        fun style(tv: TextView?, active: Boolean) {
+            tv?.setTextColor(if (active) selColor else normColor)
+            tv?.setBackgroundColor(if (active) selBg else normBg)
+            tv?.setTypeface(null, if (active) Typeface.BOLD else Typeface.NORMAL)
+        }
+        style(langLabelZh, currentMode == MODE_CHINESE)
+        style(langLabelEn, currentMode == MODE_ENGLISH)
+        style(langLabelUg, currentMode == MODE_UYGHUR)
+    }
 
     private fun loadKeyboardLayout() {
         when (currentKeyboardType) {
@@ -172,7 +227,7 @@ class CtrlInputMethodService : InputMethodService() {
             }
             -6 -> { commitPinyinBuffer(); currentKeyboardType = if (currentKeyboardType == "main") "number" else "main"; loadKeyboardLayout() }
             -7 -> { commitPinyinBuffer(); currentKeyboardType = if (currentKeyboardType == "symbol") "main" else "symbol"; loadKeyboardLayout() }
-            -4 -> cycleLanguage()
+            -4 -> switchTo(when (currentMode) { MODE_UYGHUR -> MODE_ENGLISH; MODE_ENGLISH -> MODE_CHINESE; MODE_CHINESE -> MODE_UYGHUR; else -> MODE_UYGHUR })
             else -> {
                 if (currentMode == MODE_CHINESE && currentKeyboardType == "main" && code > 0) {
                     val c = code.toChar()
@@ -368,12 +423,6 @@ class CtrlInputMethodService : InputMethodService() {
         gEngine?.reset()
         allCandidates = emptyList()
         hideCandidates()
-    }
-
-    private fun cycleLanguage() {
-        commitPinyinBuffer()
-        currentMode = when (currentMode) { MODE_UYGHUR -> MODE_ENGLISH; MODE_ENGLISH -> MODE_CHINESE; MODE_CHINESE -> MODE_UYGHUR; else -> MODE_UYGHUR }
-        currentKeyboardType = "main"; langSwitch?.text = modeLabelText(); loadKeyboardLayout()
     }
 
     override fun onStartInputView(info: EditorInfo?, restarting: Boolean) { super.onStartInputView(info, restarting); loadKeyboardLayout() }

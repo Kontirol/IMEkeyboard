@@ -89,18 +89,42 @@ class CtrlKeyboardView @JvmOverloads constructor(
 
     private fun computeKeys(w: Int) {
         keyRects.clear(); keyDefs.clear()
+        val pad = keyMarginH * 2f
+
+        // 先算第一行的单位权重像素宽度（第二行复用此宽度以实现等宽居中）
+        var refUnitW = 0f
+        val firstRow = layout.rows.getOrNull(0)
+        if (firstRow != null && firstRow.isNotEmpty()) {
+            val firstTw = firstRow.sumOf { it.widthWeight.toDouble() }.toFloat()
+            val firstAvailW = w - pad * (firstRow.size + 1)
+            refUnitW = firstAvailW / firstTw
+        }
+
         var y = keyMarginV
-        for (row in layout.rows) {
+        for ((rowIdx, row) in layout.rows.withIndex()) {
             if (row.isEmpty()) { y += rowHeight; continue }
             val tw = row.sumOf { it.widthWeight.toDouble() }.toFloat()
-            val pad = keyMarginH * 2f
-            val availW = w - pad * (row.size + 1)
-            var x = keyMarginH
-            for (key in row) {
-                val kw = (key.widthWeight / tw) * availW
-                keyRects.add(RectF(x, y, x + kw, y + rowHeight - keyMarginV * 2))
-                keyDefs.add(key)
-                x += kw + pad
+
+            if (rowIdx == 1 && refUnitW > 0f) {
+                // 第二行：使用第一行 unitW，居中，两侧自然留白
+                val rowContentW = tw * refUnitW + pad * (row.size - 1)
+                val margin = (w - rowContentW) / 2f
+                var x = margin
+                for (key in row) {
+                    val kw = key.widthWeight * refUnitW
+                    keyRects.add(RectF(x, y, x + kw, y + rowHeight - keyMarginV * 2))
+                    keyDefs.add(key)
+                    x += kw + pad
+                }
+            } else {
+                val availW = w - pad * (row.size + 1)
+                var x = keyMarginH
+                for (key in row) {
+                    val kw = (key.widthWeight / tw) * availW
+                    keyRects.add(RectF(x, y, x + kw, y + rowHeight - keyMarginV * 2))
+                    keyDefs.add(key)
+                    x += kw + pad
+                }
             }
             y += rowHeight
         }

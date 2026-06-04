@@ -7,6 +7,10 @@ class DictLoader(assetManager: AssetManager?) {
     val charDict: Map<String, List<Pair<String, Long>>>
     private val wordDict: Map<String, List<Pair<String, Long>>>
 
+    // 排序 key 列表，用于二分查找前缀匹配 → O(log N + results) 替代 O(N)
+    private val wordKeysSorted: List<String>
+    private val charKeysSorted: List<String>
+
     init {
         if (assetManager != null) {
             charDict = loadRimeCharDict(assetManager)
@@ -15,11 +19,12 @@ class DictLoader(assetManager: AssetManager?) {
             charDict = emptyMap()
             wordDict = emptyMap()
         }
+        wordKeysSorted = wordDict.keys.sorted()
+        charKeysSorted = charDict.keys.sorted()
     }
 
     /**
      * 纯词语搜索（不含单字兜底）。
-     * @return 匹配的词语列表（可能为空）
      */
     fun getCandidates(
         completed: List<String>,
@@ -38,17 +43,20 @@ class DictLoader(assetManager: AssetManager?) {
             }
         }
 
-        // 前缀匹配：按需过滤 wordDict keys，无需预建索引
+        // 前缀匹配：二分查找 + 范围扫描
         if (compactKey.isNotEmpty() && active.isNotEmpty()) {
             val candidates = mutableListOf<Pair<String, Long>>()
-            for (key in wordDict.keys) {
-                if (key.startsWith(compactKey)) {
-                    wordDict[key]?.let { words ->
-                        for ((w, f) in words) {
-                            if (w !in result) candidates.add(Pair(w, f))
-                        }
+            val seen = mutableSetOf<String>()
+            val startIdx = wordKeysSorted.binarySearch(compactKey).let { if (it < 0) -it - 1 else it }
+            for (i in startIdx until wordKeysSorted.size) {
+                val key = wordKeysSorted[i]
+                if (!key.startsWith(compactKey)) break
+                wordDict[key]?.let { words ->
+                    for ((w, f) in words) {
+                        if (seen.add(w)) candidates.add(Pair(w, f))
                     }
                 }
+                if (candidates.size >= limit * 3) break
             }
             candidates.sortByDescending { it.second }
             for ((word, _) in candidates) {
@@ -63,17 +71,24 @@ class DictLoader(assetManager: AssetManager?) {
     }
 
     /**
-     * 按音节前缀查询单字候选（用于正在输入时显示提示字）
+     * 按音节前缀查询单字候选（二分查找优化）
      */
     fun getCharCandidatesByPrefix(prefix: String, limit: Int = 12): List<String> {
         if (prefix.isEmpty()) return emptyList()
         val seen = mutableSetOf<String>()
         val result = mutableListOf<String>()
-        for (syl in charDict.keys.filter { it.startsWith(prefix) }.sortedBy { it.length }) {
+        val startIdx = charKeysSorted.binarySearch(prefix).let { if (it < 0) -it - 1 else it }
+        val matchingKeys = mutableListOf<String>()
+        for (i in startIdx until charKeysSorted.size) {
+            val key = charKeysSorted[i]
+            if (!key.startsWith(prefix)) break
+            matchingKeys.add(key)
+        }
+        matchingKeys.sortBy { it.length }
+        for (syl in matchingKeys) {
             charDict[syl]?.let { chars ->
                 for ((ch, _) in chars) {
-                    if (ch !in seen) {
-                        seen.add(ch)
+                    if (seen.add(ch)) {
                         result.add(ch)
                         if (result.size >= limit) return result
                     }

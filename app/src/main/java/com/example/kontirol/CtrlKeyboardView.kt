@@ -8,7 +8,7 @@ import android.os.Vibrator
 import android.util.AttributeSet
 import android.view.MotionEvent
 import android.view.View
-import kotlin.math.abs
+
 
 class CtrlKeyboardView @JvmOverloads constructor(
     context: Context,
@@ -43,12 +43,13 @@ class CtrlKeyboardView @JvmOverloads constructor(
     private var layout: KeyboardLayout = KeyboardLayouts.ENGLISH
     var isShifted = false
 
-    private var pressedKeyIndex = -1
+    // pressedKeys: 视觉高亮（-1 表示无高亮），origKey: 发射用（不受 MOVE 影响）
+    private val pressedKeys = mutableMapOf<Int, Int>()
+    private val origKey = mutableMapOf<Int, Int>()
+    private var firstPointerId = -1
     private var longPressTriggered = false
     private val longPressDelay = 400L
     private val repeatDelay = 55L
-    private var downX = 0f
-    private var downY = 0f
     private val handler = Handler(Looper.getMainLooper())
     private var pendingLongPress: Runnable? = null
     private var repeatRunnable: Runnable? = null
@@ -65,6 +66,9 @@ class CtrlKeyboardView @JvmOverloads constructor(
     private val keyMarginH = 5f
     private val keyMarginV = 8f
     private val shadowOffset = 2f
+
+    // 复用 RectF，避免 onDraw 中频繁创建对象导致 GC 停顿
+    private val tmpRect = RectF()
 
     fun setLayout(l: KeyboardLayout) { layout = l; isShifted = false; requestLayout(); invalidate() }
     fun toggleShift() { isShifted = !isShifted; invalidate() }
@@ -111,10 +115,13 @@ class CtrlKeyboardView @JvmOverloads constructor(
 
     private fun drawKey(canvas: Canvas, i: Int) {
         if (i >= keyRects.size || i >= keyDefs.size) return
-        val r = keyRects[i]; val k = keyDefs[i]; val pressed = i == pressedKeyIndex
+        val r = keyRects[i]; val k = keyDefs[i]
+        val pressed = pressedKeys.containsValue(i)
+
         if (!pressed) {
             keyPaint.style = Paint.Style.FILL; keyPaint.color = keyShadowColor
-            canvas.drawRoundRect(RectF(r.left, r.top + shadowOffset, r.right, r.bottom + shadowOffset), keyRadius, keyRadius, keyPaint)
+            tmpRect.set(r.left, r.top + shadowOffset, r.right, r.bottom + shadowOffset)
+            canvas.drawRoundRect(tmpRect, keyRadius, keyRadius, keyPaint)
         }
         keyPaint.style = Paint.Style.FILL
         keyPaint.color = when {
@@ -123,7 +130,10 @@ class CtrlKeyboardView @JvmOverloads constructor(
             k.isSpecial -> keySpecialColor
             else -> keyColor
         }
-        val kr = if (pressed) RectF(r.left, r.top + shadowOffset, r.right, r.bottom + shadowOffset) else r
+        val kr = if (pressed) {
+            tmpRect.set(r.left, r.top + shadowOffset, r.right, r.bottom + shadowOffset)
+            tmpRect
+        } else r
         canvas.drawRoundRect(kr, keyRadius, keyRadius, keyPaint)
 
         val label = keyLabel(k)
@@ -153,7 +163,8 @@ class CtrlKeyboardView @JvmOverloads constructor(
         val t = popupText ?: return
         val pw = 100f; val ph = 110f; val px = popupX - pw / 2; val py = popupY - ph - 12f
         popupPaint.style = Paint.Style.FILL; popupPaint.color = popupColor
-        canvas.drawRoundRect(RectF(px, py, px + pw, py + ph), 18f, 18f, popupPaint)
+        tmpRect.set(px, py, px + pw, py + ph)
+        canvas.drawRoundRect(tmpRect, 18f, 18f, popupPaint)
         val tri = Path().apply { moveTo(popupX - 8f, py + ph); lineTo(popupX + 8f, py + ph); lineTo(popupX, py + ph + 8f); close() }
         canvas.drawPath(tri, popupPaint)
         textPaint.typeface = if (layout == KeyboardLayouts.UYGHUR && ukijTypeface != null) ukijTypeface else defaultTypeface
@@ -163,53 +174,84 @@ class CtrlKeyboardView @JvmOverloads constructor(
 
     override fun onTouchEvent(e: MotionEvent): Boolean {
         try {
-            val x = e.x; val y = e.y
-            when (e.action) {
-                MotionEvent.ACTION_DOWN -> {
-                    downX = x; downY = y; longPressTriggered = false
-                    pressedKeyIndex = findKey(x, y)
-                    if (pressedKeyIndex >= 0) {
-                        showPopup(pressedKeyIndex)
-                        startLongPress(pressedKeyIndex)
-                        try { (context.getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator)?.vibrate(20L) } catch (_: Exception) {}
+            val action = e.actionMasked
+            val idx = e.actionIndex
+            val pid = e.getPointerId(idx)
+            val x = e.getX(idx)
+            val y = e.getY(idx)
+
+            when (action) {
+                MotionEvent.ACTION_DOWN,
+                MotionEvent.ACTION_POINTER_DOWN -> {
+                    val ki = findKey(x, y)
+                    if (ki >= 0) {
+                        pressedKeys[pid] = ki
+                        origKey[pid] = ki
+                        if (pressedKeys.size == 1) {
+                            firstPointerId = pid
+                            longPressTriggered = false
+                            showPopup(ki)
+                            startLongPress(ki)
+                            try { (context.getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator)?.vibrate(15L) } catch (_: Exception) {}
+                        }
                     }
                     invalidate(); return true
                 }
                 MotionEvent.ACTION_MOVE -> {
-                    if (abs(x - downX) > 40f || abs(y - downY) > 40f) {
-                        stopAll(); hidePopup()
-                        if (pressedKeyIndex >= 0 && findKey(x, y) != pressedKeyIndex) { pressedKeyIndex = -1; invalidate() }
+                    // origKey 固定不动——UP 时始终发射最初按下的键
+                    // pressedKeys 仅用于视觉：手指在原键附近高亮原键，滑到邻居高亮邻居，出界取消
+                    for (i in 0 until e.pointerCount) {
+                        val pi = e.getPointerId(i)
+                        val oi = origKey[pi] ?: continue
+                        val orig = keyRects[oi]
+                        val mx = e.getX(i); val my = e.getY(i)
+                        val tol = 30f
+                        if (mx < orig.left - tol || mx > orig.right + tol ||
+                            my < orig.top - tol || my > orig.bottom + tol) {
+                            val ni = findKey(mx, my)
+                            pressedKeys[pi] = if (ni >= 0) ni else -1
+                        } else {
+                            pressedKeys[pi] = oi
+                        }
                     }
-                    return true
+                    invalidate(); return true
+                }
+                MotionEvent.ACTION_POINTER_UP -> {
+                    val ki = origKey[pid]
+                    if (ki != null && !longPressTriggered) fireKey(ki, false)
+                    if (pid == firstPointerId) { stopAll(); hidePopup() }
+                    pressedKeys.remove(pid); origKey.remove(pid)
+                    longPressTriggered = false
+                    invalidate(); return true
                 }
                 MotionEvent.ACTION_UP -> {
                     stopAll(); hidePopup()
-                    val idx = findKey(x, y)
-                    if (idx >= 0 && idx == pressedKeyIndex && !longPressTriggered) fireKey(idx, false)
-                    pressedKeyIndex = -1; longPressTriggered = false; invalidate()
-                    return true
+                    val ki = origKey[pid]
+                    if (ki != null && !longPressTriggered) fireKey(ki, false)
+                    pressedKeys.clear(); origKey.clear(); firstPointerId = -1; longPressTriggered = false
+                    invalidate(); return true
                 }
                 MotionEvent.ACTION_CANCEL -> {
                     stopAll(); hidePopup()
-                    pressedKeyIndex = -1; longPressTriggered = false; invalidate()
-                    return true
+                    pressedKeys.clear(); origKey.clear(); firstPointerId = -1; longPressTriggered = false
+                    invalidate(); return true
                 }
             }
-        } catch (_: Exception) { pressedKeyIndex = -1; longPressTriggered = false; invalidate() }
-        return super.onTouchEvent(e)
+        } catch (_: Exception) { pressedKeys.clear(); origKey.clear(); firstPointerId = -1; longPressTriggered = false; invalidate() }
+        return true
     }
 
     private fun startLongPress(idx: Int) {
         val r = Runnable {
-            if (pressedKeyIndex == idx && !longPressTriggered) {
+            val oi = origKey[firstPointerId]
+            if (oi == idx && !longPressTriggered) {
                 longPressTriggered = true; hidePopup()
                 if (keyDefs[idx].code == -3) {
-                    // 删除键：启动连发
                     fireKey(idx, true)
                     startRepeat(idx)
                 } else {
                     fireKey(idx, true)
-                    pressedKeyIndex = -1
+                    pressedKeys.remove(firstPointerId)
                 }
                 invalidate()
             }
@@ -220,7 +262,7 @@ class CtrlKeyboardView @JvmOverloads constructor(
     private fun startRepeat(idx: Int) {
         val r = object : Runnable {
             override fun run() {
-                if (pressedKeyIndex == idx) { fireKey(idx, true); handler.postDelayed(this, repeatDelay) }
+                if (origKey[firstPointerId] == idx) { fireKey(idx, true); handler.postDelayed(this, repeatDelay) }
             }
         }
         repeatRunnable = r; handler.postDelayed(r, repeatDelay)
@@ -251,6 +293,13 @@ class CtrlKeyboardView @JvmOverloads constructor(
     private fun hidePopup() { popupVisible = false; popupText = null }
 
     private fun findKey(x: Float, y: Float): Int {
-        for (i in keyRects.indices) { if (keyRects[i].contains(x, y)) return i }; return -1
+        // 扩展触摸区域：把 keyMargin 空间纳入命中范围，消除键间死区
+        val expand = keyMarginH
+        for (i in keyRects.indices) {
+            val r = keyRects[i]
+            if (x >= r.left - expand && x <= r.right + expand &&
+                y >= r.top - expand && y <= r.bottom + expand) return i
+        }
+        return -1
     }
 }

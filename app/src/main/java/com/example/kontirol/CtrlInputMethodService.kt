@@ -1,6 +1,9 @@
-﻿package com.example.kontirol
+package com.example.kontirol
 
 import android.inputmethodservice.InputMethodService
+import android.os.Handler
+import android.os.HandlerThread
+import android.os.Looper
 import android.util.Log
 import android.view.KeyEvent
 import android.view.View
@@ -30,15 +33,30 @@ class CtrlInputMethodService : InputMethodService() {
     private var allCandidates = listOf<String>()
     private var candidatePage = 0
     private var langSwitch: TextView? = null
-    private var pinyinBuffer = StringBuilder()
 
+    // ===== 引擎 =====
     private var gEngine: GooglePinyinEngine? = null
     private var ktEngine: PinyinEngine? = null
     private var ktDict: DictLoader? = null
     private var useGoogle = false
 
-    // 增量同步：记录已同步到引擎的字符数，避免每次 reset+重建
+    // ===== 拼音缓冲区（同步保护） =====
+    @Volatile
+    private var pinyinBuffer = ""
+    private val bufferLock = Any()
+
+    // ===== 引擎同步（仅 Google 引擎需要） =====
+    // enginePos 追踪已同步到 native 引擎的字符数
     private var enginePos = 0
+
+    // ===== 异步候选计算 =====
+    // 核心改进：所有引擎查询在后台线程执行，主线程只负责 UI 更新
+    private val computeThread = HandlerThread("pinyin-compute").apply { start() }
+    private val computeHandler = Handler(computeThread.looper)
+    private val mainHandler = Handler(Looper.getMainLooper())
+    @Volatile
+    private var computeGeneration = 0
+    private val DEBOUNCE_MS = 30L  // 防抖延迟（缩短到30ms，因为不再阻塞主线程）
 
     override fun onCreateInputView(): View {
         try {
@@ -120,7 +138,8 @@ class CtrlInputMethodService : InputMethodService() {
                 MODE_CHINESE -> keyboardView?.setLayout(KeyboardLayouts.CHINESE)
             }
         }
-        updateCandidates()
+        // 切模式时立即刷新候选栏（用当前 buffer）
+        scheduleCompute()
     }
 
     private fun safeHandleKey(key: KeyDef, isLong: Boolean) {
@@ -133,9 +152,13 @@ class CtrlInputMethodService : InputMethodService() {
             -1 -> keyboardView?.toggleShift()
             -3 -> {
                 if (currentMode == MODE_CHINESE && pinyinBuffer.isNotEmpty()) {
-                    pinyinBuffer.deleteCharAt(pinyinBuffer.length - 1)
+                    synchronized(bufferLock) {
+                        if (pinyinBuffer.isNotEmpty()) {
+                            pinyinBuffer = pinyinBuffer.substring(0, pinyinBuffer.length - 1)
+                        }
+                    }
                     fullSyncEngine()
-                    updateCandidates()
+                    scheduleCompute()
                 } else ic?.deleteSurroundingText(1, 0)
             }
             -2 -> { commitPinyinBuffer(); ic?.sendKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_ENTER)); ic?.sendKeyEvent(KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_ENTER)) }
@@ -154,9 +177,9 @@ class CtrlInputMethodService : InputMethodService() {
                 if (currentMode == MODE_CHINESE && currentKeyboardType == "main" && code > 0) {
                     val c = code.toChar()
                     if (c.isLetter()) {
-                        pinyinBuffer.append(c.lowercaseChar())
+                        synchronized(bufferLock) { pinyinBuffer += c.lowercaseChar() }
                         incrSyncEngine(c.lowercaseChar())
-                        updateCandidates()
+                        scheduleCompute()
                     } else {
                         commitPinyinBuffer()
                         ic?.commitText(c.toString(), 1)
@@ -172,13 +195,14 @@ class CtrlInputMethodService : InputMethodService() {
         }
     }
 
-    // 增量同步：只追加新字母，不重建
+    // ========== 引擎同步（主线程，轻量 JNI 调用） ==========
+
     private fun incrSyncEngine(ch: Char) {
         if (!useGoogle) return
         val engine = gEngine ?: return
         try {
+            // 增量同步：引擎状态应当已经包含 pinyinBuffer 中除最后一个字符外的所有内容
             if (enginePos != pinyinBuffer.length - 1) {
-                // 引擎不同步（删过字/切过模式等），全量重建
                 fullSyncEngine()
                 return
             }
@@ -186,18 +210,18 @@ class CtrlInputMethodService : InputMethodService() {
             enginePos++
         } catch (e: Exception) {
             Log.e(TAG, "incrSync", e)
-            enginePos = 0
+            enginePos = 0 // 下次触发 fullSync
         }
     }
 
-    // 全量重建：reset + 逐字添加
     private fun fullSyncEngine() {
         if (!useGoogle) return
         val engine = gEngine ?: return
         try {
             engine.reset()
             enginePos = 0
-            for (ch in pinyinBuffer) {
+            val buf = synchronized(bufferLock) { pinyinBuffer }
+            for (ch in buf) {
                 engine.addLetter(ch)
                 enginePos++
             }
@@ -207,42 +231,97 @@ class CtrlInputMethodService : InputMethodService() {
         }
     }
 
-    private fun updateCandidates() {
-        if (currentMode != MODE_CHINESE || pinyinBuffer.isEmpty()) { hideCandidates(); return }
+    // ========== 异步候选计算（核心改进） ==========
+
+    private fun scheduleCompute() {
+        // 递增代数，使所有旧计算失效
+        computeGeneration++
+        val gen = computeGeneration
+
+        // 取消后台线程上所有待处理任务
+        computeHandler.removeCallbacksAndMessages(null)
+
+        // 取当前 buffer 快照
+        val buf = synchronized(bufferLock) { pinyinBuffer }
+
+        // 在后台线程延迟执行计算（防抖：合并快速连续输入）
+        computeHandler.postDelayed({
+            if (computeGeneration != gen) return@postDelayed  // 已被新输入取消
+            val result = doCompute(buf)
+            // 结果回到主线程更新 UI
+            if (computeGeneration == gen) {
+                mainHandler.post { applyResult(result) }
+            }
+        }, DEBOUNCE_MS)
+    }
+
+    /** 在后台线程执行所有重量级查询 */
+    private fun doCompute(buf: String): ComputeResult {
+        if (buf.isEmpty() || currentMode != MODE_CHINESE) {
+            return ComputeResult(emptyList(), "", false)
+        }
+
         try {
             if (useGoogle && gEngine != null) {
-                allCandidates = gEngine!!.getCandidates(32)
-                pinyinLabel?.text = gEngine!!.getPyStr(true) ?: pinyinBuffer.toString()
+                val engine = gEngine!!
+                // Google 引擎的 getCandidates 是重量级 JNI 调用（nativeImSearch + 32x nativeImGetChoice）
+                // 这里在后台线程执行，不会阻塞主线程触控
+                val candidates: List<String>
+                val pyStr: String
+                synchronized(engine) {
+                    candidates = engine.getCandidates(32)
+                    pyStr = engine.getPyStr(true) ?: buf
+                }
+                return ComputeResult(candidates, pyStr, true)
             } else {
-                val seg = ktEngine?.segment(pinyinBuffer.toString()) ?: run { hideCandidates(); return }
+                val seg = ktEngine?.segment(buf) ?: return ComputeResult(emptyList(), buf, true)
                 val completed = seg.completed; val active = seg.active
                 val words = ktDict?.getCandidates(completed, active, limit = 50) ?: emptyList()
+
                 if (words.isNotEmpty()) {
-                    allCandidates = words
-                    pinyinLabel?.text = completed.joinToString(" ") + if (active.isNotEmpty()) " $active" else ""
+                    val label = completed.joinToString(" ") + if (active.isNotEmpty()) " $active" else ""
+                    return ComputeResult(words, label, true)
                 } else if (completed.size >= 2 && active.isEmpty()) {
-                    allCandidates = getCharCandidates(completed[0])
-                    pinyinLabel?.text = "[" + completed[0] + "] " + completed.drop(1).joinToString(" ")
+                    val chars = ktDict?.charDict?.get(completed[0])?.take(50)?.map { it.first } ?: emptyList()
+                    val label = "[" + completed[0] + "] " + completed.drop(1).joinToString(" ")
+                    return ComputeResult(chars, label, true)
                 } else if (completed.size == 1 && active.isEmpty()) {
-                    allCandidates = getCharCandidates(completed[0])
-                    pinyinLabel?.text = completed[0]
+                    val chars = ktDict?.charDict?.get(completed[0])?.take(50)?.map { it.first } ?: emptyList()
+                    return ComputeResult(chars, completed[0], true)
                 } else if (active.isNotEmpty()) {
-                    allCandidates = ktDict?.getCharCandidatesByPrefix(active, limit = 12) ?: emptyList()
-                    pinyinLabel?.text = completed.joinToString(" ").let { if (it.isNotEmpty()) "$it $active" else active }
-                } else { allCandidates = emptyList(); pinyinLabel?.text = pinyinBuffer.toString() }
+                    val chars = ktDict?.getCharCandidatesByPrefix(active, limit = 12) ?: emptyList()
+                    val label = completed.joinToString(" ").let { if (it.isNotEmpty()) "$it $active" else active }
+                    return ComputeResult(chars, label, true)
+                } else {
+                    return ComputeResult(emptyList(), buf, true)
+                }
             }
-            candidatePage = 0
-            renderCandidatePage()
-            candidateArea?.visibility = View.VISIBLE
         } catch (e: Exception) {
-            Log.e(TAG, "updateCandidates", e)
-            hideCandidates()
+            Log.e(TAG, "doCompute", e)
+            return ComputeResult(emptyList(), "", false)
         }
     }
 
-    private fun getCharCandidates(syl: String): List<String> {
-        return ktDict?.charDict?.get(syl)?.take(50)?.map { it.first } ?: emptyList()
+    /** 在主线程应用计算结果（仅更新 UI） */
+    private fun applyResult(result: ComputeResult) {
+        if (currentMode != MODE_CHINESE || !result.visible) {
+            hideCandidates()
+            return
+        }
+        allCandidates = result.candidates
+        candidatePage = 0
+        pinyinLabel?.text = result.label
+        renderCandidatePage()
+        candidateArea?.visibility = View.VISIBLE
     }
+
+    data class ComputeResult(
+        val candidates: List<String>,
+        val label: String,
+        val visible: Boolean
+    )
+
+    // ========== 候选栏 UI ==========
 
     private fun hideCandidates() {
         allCandidates = emptyList(); candidatePage = 0; pinyinLabel?.text = ""
@@ -271,20 +350,24 @@ class CtrlInputMethodService : InputMethodService() {
         } catch (e: Exception) {
             Log.e(TAG, "commitText", e)
         }
-        pinyinBuffer.clear()
+        // 清空缓冲区
+        synchronized(bufferLock) { pinyinBuffer = "" }
         enginePos = 0
         gEngine?.reset()
-        updateCandidates()
+        allCandidates = emptyList()
+        hideCandidates()
     }
 
     private fun commitPinyinBuffer() {
-        if (pinyinBuffer.isNotEmpty()) {
-            currentInputConnection?.commitText(pinyinBuffer.toString(), 1)
-            pinyinBuffer.clear()
-            enginePos = 0
-            gEngine?.reset()
-            updateCandidates()
+        val buf = synchronized(bufferLock) {
+            if (pinyinBuffer.isEmpty()) return
+            pinyinBuffer.also { pinyinBuffer = "" }
         }
+        currentInputConnection?.commitText(buf, 1)
+        enginePos = 0
+        gEngine?.reset()
+        allCandidates = emptyList()
+        hideCandidates()
     }
 
     private fun cycleLanguage() {
@@ -295,6 +378,11 @@ class CtrlInputMethodService : InputMethodService() {
 
     override fun onStartInputView(info: EditorInfo?, restarting: Boolean) { super.onStartInputView(info, restarting); loadKeyboardLayout() }
     override fun onFinishInputView(finishingInput: Boolean) { super.onFinishInputView(finishingInput); commitPinyinBuffer() }
-    override fun onDestroy() { gEngine?.close(); super.onDestroy() }
+    override fun onDestroy() {
+        computeThread.quitSafely()
+        gEngine?.close()
+        super.onDestroy()
+    }
+
     private fun dp2px(dp: Int): Int = (dp * resources.displayMetrics.density).toInt()
 }

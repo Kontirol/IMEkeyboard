@@ -13,26 +13,77 @@ class PinyinEngine {
         fun fullPinyin() = (completed + listOf(active).filter { it.isNotEmpty() }).joinToString(" ")
     }
 
+    // 缓存上次分词结果，支持增量追加（避免每次全量重分词）
+    private var cachedInput: String = ""
+    private var cachedResult: SegmentResult = SegmentResult(emptyList(), "")
+
     fun segment(input: String): SegmentResult {
-        if (input.isEmpty()) return SegmentResult(emptyList(), "")
+        if (input.isEmpty()) {
+            cachedInput = ""
+            cachedResult = SegmentResult(emptyList(), "")
+            return cachedResult
+        }
         val lower = input.lowercase().trim()
-        val parts = lower.split("'")
+
+        // 增量追加：新输入是上次输入 + 若干字符
+        if (lower.startsWith(cachedInput) && cachedInput.isNotEmpty()) {
+            val suffix = lower.substring(cachedInput.length)
+            val merged = mergeActive(cachedResult, suffix)
+            cachedInput = lower
+            cachedResult = merged
+            return merged
+        }
+
+        // 退格或全新输入 → 全量分词
+        val result = segmentFull(lower)
+        cachedInput = lower
+        cachedResult = result
+        return result
+    }
+
+    /** 在已有分词结果上追加新字符，只处理 active 部分 */
+    private fun mergeActive(prev: SegmentResult, suffix: String): SegmentResult {
+        val newActive = prev.active + suffix
+        // 检查新 active 是否是完整音节
+        if (newActive in syllableSet) {
+            return SegmentResult(prev.completed + newActive, "")
+        }
+        // 尝试用 trie 看能否继续扩展为有效音节
+        if (trieRoot.findLongest(newActive) != null) {
+            return SegmentResult(prev.completed, newActive)
+        }
+        // newActive 无法构成有效音节前缀 → 对 active 部分重新分词
+        val (words, _) = tokenize(newActive)
+        if (words.isEmpty()) return SegmentResult(prev.completed, newActive)
+        val newCompleted = prev.completed.toMutableList()
+        var pos = 0
+        for (w in words) {
+            if (pos + w.length <= newActive.length && newActive.substring(pos, pos + w.length) == w && w in syllableSet) {
+                newCompleted.add(w); pos += w.length
+            } else break
+        }
+        val remaining = newActive.substring(pos)
+        return SegmentResult(newCompleted, remaining)
+    }
+
+    private fun segmentFull(input: String): SegmentResult {
+        val parts = input.split("'")
         if (parts.size > 1) {
             val c = parts.dropLast(1)
             val last = parts.last()
             return if (last in syllableSet || last.isEmpty()) SegmentResult(c + listOf(last).filter{it.isNotEmpty()}, "")
             else SegmentResult(c, last)
         }
-        val (words, _) = tokenize(lower)
-        if (words.isEmpty()) return SegmentResult(emptyList(), lower)
+        val (words, _) = tokenize(input)
+        if (words.isEmpty()) return SegmentResult(emptyList(), input)
         val completed = mutableListOf<String>()
         var pos = 0
         for (w in words) {
-            if (pos + w.length <= lower.length && lower.substring(pos, pos + w.length) == w && w in syllableSet) {
+            if (pos + w.length <= input.length && input.substring(pos, pos + w.length) == w && w in syllableSet) {
                 completed.add(w); pos += w.length
             } else break
         }
-        val active = lower.substring(pos)
+        val active = input.substring(pos)
         return if (active.isNotEmpty()) SegmentResult(completed, active) else SegmentResult(completed, "")
     }
 
@@ -46,43 +97,56 @@ class PinyinEngine {
         val invalid = mutableListOf<Char>()
         var rem = sentence
         while (rem.isNotEmpty()) {
-            val (buf, succ) = trieRoot.find(rem)
-            if (succ) { words.add(buf); rem = rem.substring(buf.length) }
-            else { invalid.add(rem[0]); rem = rem.substring(1) }
+            val match = trieRoot.findLongest(rem)
+            if (match != null) {
+                val split = trySplitG(rem, match)
+                if (split != null) {
+                    words.add(split)
+                    rem = rem.substring(split.length)
+                } else {
+                    words.add(match)
+                    rem = rem.substring(match.length)
+                }
+            } else {
+                invalid.add(rem[0])
+                rem = rem.substring(1)
+            }
         }
         return Pair(words, invalid)
     }
 
+    /**
+     * 检查 match 是否应该去掉末尾 'g' 来分割。
+     * 条件：match 以 'g' 结尾、去除 'g' 后是有效音节、且 'g' 能作为下一个音节的开头。
+     */
+    private fun trySplitG(sentence: String, match: String): String? {
+        if (!match.endsWith("g") || match.length < 2) return null
+        val withoutG = match.dropLast(1)
+        if (withoutG !in syllableSet) return null
+        val after = sentence.substring(match.length)
+        if (after.isEmpty()) return null
+        // 用 trie 检查 "g" + after 是否可以开启有效音节 → O(k), 原来 O(400)
+        if (trieRoot.findLongest("g$after") != null) return withoutG
+        return null
+    }
+
     private class PinyinTrieNode(val key: Char = '\u0000', var end: Boolean = false) {
         val children = mutableMapOf<Char, PinyinTrieNode>()
+
         fun add(seq: List<Char>) {
-            if (seq.isEmpty()) { end = true }
-            else children.getOrPut(seq[0]) { PinyinTrieNode(seq[0]) }.add(seq.drop(1))
+            if (seq.isEmpty()) { end = true; return }
+            children.getOrPut(seq[0]) { PinyinTrieNode(seq[0]) }.add(seq.drop(1))
         }
-        fun find(sentence: String): Pair<String, Boolean> {
+
+        fun findLongest(sentence: String): String? {
+            if (sentence.isEmpty()) return null
+            var node: PinyinTrieNode = this
+            var best: String? = null
             for (i in sentence.indices) {
-                val j = sentence.length - i
-                if (sentence.length >= j) {
-                    val k = sentence.substring(0, j)
-                    if (k.isNotEmpty() && k[0] in children) {
-                        val (buf, ok) = children[k[0]]!!.find(sentence.substring(1))
-                        if (ok) {
-                            if (buf.isNotEmpty() && buf.last() == 'g') {
-                                val (b1, s1) = children[k[0]]!!.find(buf.dropLast(1))
-                                if (b1.isNotEmpty()) {
-                                    val rs = 1 + buf.length
-                                    if (rs <= sentence.length && buf.last() in children) {
-                                        val (_, s2) = children[buf.last()]!!.find(sentence.substring(rs))
-                                        if (s1 && s2) return Pair(sentence[0] + b1, true)
-                                    }
-                                }
-                            }
-                            return Pair(sentence[0] + buf, true)
-                        }
-                    }
-                }
+                node = node.children[sentence[i]] ?: break
+                if (node.end) best = sentence.substring(0, i + 1)
             }
-            return Pair("", end)
+            return best
         }
     }
 

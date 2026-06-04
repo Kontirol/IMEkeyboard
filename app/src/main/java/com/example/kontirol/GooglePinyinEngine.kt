@@ -1,4 +1,4 @@
-﻿package com.example.kontirol
+package com.example.kontirol
 
 import android.content.Context
 import com.android.inputmethod.pinyin.PinyinDecoderService
@@ -30,25 +30,38 @@ class GooglePinyinEngine(private val context: Context?) {
         }
     }
 
-    fun close() { if (initialized) { PinyinDecoderService.nativeImCloseDecoder(); initialized = false } }
+    fun close() {
+        synchronized(this) {
+            if (initialized) { PinyinDecoderService.nativeImCloseDecoder(); initialized = false }
+        }
+    }
 
-    fun reset() { pinyinBuf = ""; PinyinDecoderService.nativeImResetSearch() }
+    fun reset() {
+        synchronized(this) {
+            pinyinBuf = ""
+            if (initialized) PinyinDecoderService.nativeImResetSearch()
+        }
+    }
 
     fun addLetter(ch: Char): Int {
-        pinyinBuf += ch
-        return PinyinDecoderService.nativeImAddLetter(ch.code.toByte())
+        synchronized(this) {
+            pinyinBuf += ch
+            return PinyinDecoderService.nativeImAddLetter(ch.code.toByte())
+        }
     }
 
     fun getCandidates(maxCount: Int = 32): List<String> {
-        val bytes = pinyinBuf.toByteArray(Charsets.UTF_8)
-        PinyinDecoderService.nativeImSearch(bytes, bytes.size)
-        val result = mutableListOf<String>()
-        for (i in 0 until maxCount) {
-            val c = PinyinDecoderService.nativeImGetChoice(i)
-            if (c.isNullOrEmpty()) break
-            result.add(c)
+        synchronized(this) {
+            val bytes = pinyinBuf.toByteArray(Charsets.UTF_8)
+            PinyinDecoderService.nativeImSearch(bytes, bytes.size)
+            val result = mutableListOf<String>()
+            for (i in 0 until maxCount) {
+                val c = PinyinDecoderService.nativeImGetChoice(i)
+                if (c.isNullOrEmpty()) break
+                result.add(c)
+            }
+            return result
         }
-        return result
     }
 
     fun getCandidate(index: Int): String? {
@@ -61,10 +74,12 @@ class GooglePinyinEngine(private val context: Context?) {
     fun deleteSearch(pos: Int, isPosInSplid: Boolean, clearFixedThisStep: Boolean): Int =
         PinyinDecoderService.nativeImDelSearch(pos, isPosInSplid, clearFixedThisStep)
     fun getSplStart(): IntArray? = PinyinDecoderService.nativeImGetSplStart()
-    fun getPyStr(decoded: Boolean = true): String? = PinyinDecoderService.nativeImGetPyStr(decoded)
+    fun getPyStr(decoded: Boolean = true): String? = synchronized(this) {
+        PinyinDecoderService.nativeImGetPyStr(decoded)
+    }
     fun getPredicts(fixedStr: String, maxCount: Int = 8): List<String> {
-        val result = mutableListOf<String>()
         val num = PinyinDecoderService.nativeImGetPredictsNum(fixedStr)
+        val result = mutableListOf<String>()
         for (i in 0 until minOf(num, maxCount)) {
             val item = PinyinDecoderService.nativeImGetPredictItem(i)
             if (!item.isNullOrEmpty()) result.add(item)

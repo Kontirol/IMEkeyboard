@@ -30,7 +30,9 @@ object KeyboardLayouts {
             ),
             listOf(
                 KeyDef(-6, "123", isSpecial = true, widthWeight = 1.2f),
-                KeyDef(-5, "space", isSpecial = true, widthWeight = 5f),
+                KeyDef(0x002C, ",", widthWeight = 0.6f),
+                KeyDef(-5, "space", isSpecial = true, widthWeight = 3.8f),
+                KeyDef(0x002E, ".", widthWeight = 0.6f),
                 KeyDef(-2, "↵", isSpecial = true, widthWeight = 1.5f)
             )
         )

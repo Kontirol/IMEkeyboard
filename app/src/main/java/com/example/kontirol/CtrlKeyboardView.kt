@@ -15,17 +15,8 @@ class CtrlKeyboardView @JvmOverloads constructor(
     attrs: AttributeSet? = null
 ) : View(context, attrs) {
 
-    private val bgColor = Color.parseColor("#D1D3D9")
-    private val keyColor = Color.parseColor("#FFFFFF")
-    private val keySpecialColor = Color.parseColor("#ADB0B8")
-    private val keyPressedColor = Color.parseColor("#C7C9CD")
-    private val keySpecialPressedColor = Color.parseColor("#8E9096")
-    private val keyTextColor = Color.parseColor("#000000")
-    private val keySpecialTextColor = Color.parseColor("#000000")
-    private val keyShadowColor = Color.parseColor("#9A9CA3")
-    private val popupColor = Color.parseColor("#1C1C1E")
-    private val popupTextColor = Color.WHITE
-    private val longPressHintColor = Color.parseColor("#999999")
+    var theme: KeyboardTheme = KeyboardTheme.LIGHT
+        set(value) { field = value; invalidate() }
 
     private var ukijTypeface: Typeface? = null
     private var defaultTypeface = Typeface.create("sans-serif", Typeface.NORMAL)
@@ -43,7 +34,6 @@ class CtrlKeyboardView @JvmOverloads constructor(
     private var layout: KeyboardLayout = KeyboardLayouts.ENGLISH
     var isShifted = false
 
-    // pressedKeys: 视觉高亮（-1 表示无高亮），origKey: 发射用（不受 MOVE 影响）
     private val pressedKeys = mutableMapOf<Int, Int>()
     private val origKey = mutableMapOf<Int, Int>()
     private var firstPointerId = -1
@@ -67,7 +57,6 @@ class CtrlKeyboardView @JvmOverloads constructor(
     private val keyMarginV = 8f
     private val shadowOffset = 2f
 
-    // 复用 RectF，避免 onDraw 中频繁创建对象导致 GC 停顿
     private val tmpRect = RectF()
 
     fun setLayout(l: KeyboardLayout) { layout = l; isShifted = false; requestLayout(); invalidate() }
@@ -91,7 +80,6 @@ class CtrlKeyboardView @JvmOverloads constructor(
         keyRects.clear(); keyDefs.clear()
         val pad = keyMarginH * 2f
 
-        // 先算第一行的单位权重像素宽度（第二行复用此宽度以实现等宽居中）
         var refUnitW = 0f
         val firstRow = layout.rows.getOrNull(0)
         if (firstRow != null && firstRow.isNotEmpty()) {
@@ -106,7 +94,6 @@ class CtrlKeyboardView @JvmOverloads constructor(
             val tw = row.sumOf { it.widthWeight.toDouble() }.toFloat()
 
             if (rowIdx == 1 && refUnitW > 0f) {
-                // 第二行：使用第一行 unitW，居中，两侧自然留白
                 val rowContentW = tw * refUnitW + pad * (row.size - 1)
                 val margin = (w - rowContentW) / 2f
                 var x = margin
@@ -132,7 +119,7 @@ class CtrlKeyboardView @JvmOverloads constructor(
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
-        canvas.drawColor(bgColor)
+        canvas.drawColor(theme.bgColor)
         for (i in keyDefs.indices) { if (i < keyRects.size) drawKey(canvas, i) }
         if (popupVisible && popupText != null) drawPopup(canvas)
     }
@@ -143,16 +130,16 @@ class CtrlKeyboardView @JvmOverloads constructor(
         val pressed = pressedKeys.containsValue(i)
 
         if (!pressed) {
-            keyPaint.style = Paint.Style.FILL; keyPaint.color = keyShadowColor
+            keyPaint.style = Paint.Style.FILL; keyPaint.color = theme.keyShadowColor
             tmpRect.set(r.left, r.top + shadowOffset, r.right, r.bottom + shadowOffset)
             canvas.drawRoundRect(tmpRect, keyRadius, keyRadius, keyPaint)
         }
         keyPaint.style = Paint.Style.FILL
         keyPaint.color = when {
-            pressed && k.isSpecial -> keySpecialPressedColor
-            pressed -> keyPressedColor
-            k.isSpecial -> keySpecialColor
-            else -> keyColor
+            pressed && k.isSpecial -> theme.keySpecialPressedColor
+            pressed -> theme.keyPressedColor
+            k.isSpecial -> theme.keySpecialColor
+            else -> theme.keyColor
         }
         val kr = if (pressed) {
             tmpRect.set(r.left, r.top + shadowOffset, r.right, r.bottom + shadowOffset)
@@ -163,13 +150,13 @@ class CtrlKeyboardView @JvmOverloads constructor(
         val label = keyLabel(k)
         val ug = layout == KeyboardLayouts.UYGHUR
         textPaint.typeface = if (ug && ukijTypeface != null) ukijTypeface else defaultTypeface
-        textPaint.color = if (k.isSpecial) keySpecialTextColor else keyTextColor
+        textPaint.color = if (k.isSpecial) theme.keySpecialTextColor else theme.keyTextColor
         textPaint.textSize = when { k.isSpecial -> kr.height() * 0.32f; ug -> kr.height() * 0.44f; else -> kr.height() * 0.40f }
         canvas.drawText(label, kr.centerX(), kr.centerY() - (textPaint.descent() + textPaint.ascent()) / 2, textPaint)
 
         if (k.longPressLabel != null && !k.isSpecial) {
             smallTextPaint.typeface = if (ug && ukijTypeface != null) ukijTypeface else defaultTypeface
-            smallTextPaint.color = longPressHintColor
+            smallTextPaint.color = theme.longPressHintColor
             smallTextPaint.textSize = kr.height() * 0.20f
             canvas.drawText(k.longPressLabel!!, kr.right - kr.width() * 0.16f, kr.bottom - kr.height() * 0.16f, smallTextPaint)
         }
@@ -190,13 +177,13 @@ class CtrlKeyboardView @JvmOverloads constructor(
     private fun drawPopup(canvas: Canvas) {
         val t = popupText ?: return
         val pw = 100f; val ph = 110f; val px = popupX - pw / 2; val py = popupY - ph - 12f
-        popupPaint.style = Paint.Style.FILL; popupPaint.color = popupColor
+        popupPaint.style = Paint.Style.FILL; popupPaint.color = theme.popupColor
         tmpRect.set(px, py, px + pw, py + ph)
         canvas.drawRoundRect(tmpRect, 18f, 18f, popupPaint)
         val tri = Path().apply { moveTo(popupX - 8f, py + ph); lineTo(popupX + 8f, py + ph); lineTo(popupX, py + ph + 8f); close() }
         canvas.drawPath(tri, popupPaint)
         textPaint.typeface = if (layout == KeyboardLayouts.UYGHUR && ukijTypeface != null) ukijTypeface else defaultTypeface
-        textPaint.color = popupTextColor; textPaint.textSize = 36f
+        textPaint.color = theme.popupTextColor; textPaint.textSize = 36f
         canvas.drawText(t, popupX, (py + ph / 2) - (textPaint.descent() + textPaint.ascent()) / 2, textPaint)
     }
 
@@ -226,8 +213,6 @@ class CtrlKeyboardView @JvmOverloads constructor(
                     invalidate(); return true
                 }
                 MotionEvent.ACTION_MOVE -> {
-                    // origKey 固定不动——UP 时始终发射最初按下的键
-                    // pressedKeys 仅用于视觉：手指在原键附近高亮原键，滑到邻居高亮邻居，出界取消
                     for (i in 0 until e.pointerCount) {
                         val pi = e.getPointerId(i)
                         val oi = origKey[pi] ?: continue
@@ -321,7 +306,6 @@ class CtrlKeyboardView @JvmOverloads constructor(
     private fun hidePopup() { popupVisible = false; popupText = null }
 
     private fun findKey(x: Float, y: Float): Int {
-        // 扩展触摸区域：把 keyMargin 空间纳入命中范围，消除键间死区
         val expand = keyMarginH
         for (i in keyRects.indices) {
             val r = keyRects[i]

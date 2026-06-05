@@ -36,7 +36,10 @@ class SettingsFragment : Fragment() {
 
         // 主题设置
         view.findViewById<View>(R.id.btn_theme)?.setOnClickListener {
-            // TODO: 主题切换
+            parentFragmentManager.beginTransaction()
+                .replace(R.id.fragment_container, ThemeFragment())
+                .addToBackStack(null)
+                .commit()
         }
     }
 }

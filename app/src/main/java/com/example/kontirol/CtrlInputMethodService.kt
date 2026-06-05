@@ -33,7 +33,6 @@ class CtrlInputMethodService : InputMethodService() {
     private var allCandidates = listOf<String>()
     private var candidatePage = 0
 
-    // 三个语言标签
     private var langLabelZh: TextView? = null
     private var langLabelEn: TextView? = null
     private var langLabelUg: TextView? = null
@@ -54,10 +53,12 @@ class CtrlInputMethodService : InputMethodService() {
     private val mainHandler = Handler(Looper.getMainLooper())
     @Volatile
     private var computeGeneration = 0
-    private val DEBOUNCE_MS = 16L  // 一帧
+    private val DEBOUNCE_MS = 16L
 
     override fun onCreateInputView(): View {
-        // 双引擎始终初始化：Google 用于候选生成，自研用于 tryConsumePartial fallback
+        val theme = KeyboardTheme.current(this)
+
+        // 双引擎始终初始化
         try {
             val ge = GooglePinyinEngine(this)
             if (ge.init()) { gEngine = ge; useGoogle = true }
@@ -67,28 +68,28 @@ class CtrlInputMethodService : InputMethodService() {
         ktEngine = PinyinEngine()
 
         val root = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL; setBackgroundColor(Color.parseColor("#D1D3D9"))
+            orientation = LinearLayout.VERTICAL; setBackgroundColor(theme.bgColor)
         }
         candidateArea = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp2px(44))
-            setBackgroundColor(Color.parseColor("#E8E8ED")); gravity = Gravity.CENTER_VERTICAL
+            setBackgroundColor(theme.candidateBgColor); gravity = Gravity.CENTER_VERTICAL
             setPadding(dp2px(8), 0, dp2px(4), 0); visibility = View.GONE
         }
         pinyinLabel = TextView(this).apply {
             layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.MATCH_PARENT)
-            gravity = Gravity.CENTER; textSize = 13f; setTextColor(Color.parseColor("#8E8E93"))
+            gravity = Gravity.CENTER; textSize = 13f; setTextColor(theme.pinyinLabelColor)
             setTypeface(Typeface.MONOSPACE); setPadding(0, 0, dp2px(10), 0); setSingleLine(true)
         }
         candidateArea?.addView(pinyinLabel)
         candidateArea?.addView(View(this).apply {
-            layoutParams = LinearLayout.LayoutParams(dp2px(1), dp2px(24)); setBackgroundColor(Color.parseColor("#C7C7CC"))
+            layoutParams = LinearLayout.LayoutParams(dp2px(1), dp2px(24)); setBackgroundColor(theme.candidateSepColor)
         })
         for (i in 0 until CANDIDATES_PER_PAGE) {
             val idx = i
             candidateTexts[i] = TextView(this).apply {
                 layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f)
-                gravity = Gravity.CENTER; textSize = 15f; setTextColor(Color.parseColor("#000000"))
+                gravity = Gravity.CENTER; textSize = 15f; setTextColor(theme.candidateTextColor)
                 setOnClickListener { selectCandidate(candidatePage * CANDIDATES_PER_PAGE + idx) }
             }
             candidateArea?.addView(candidateTexts[i])
@@ -96,7 +97,7 @@ class CtrlInputMethodService : InputMethodService() {
         candidateNextBtn = TextView(this).apply {
             layoutParams = LinearLayout.LayoutParams(dp2px(32), LinearLayout.LayoutParams.MATCH_PARENT)
             gravity = Gravity.CENTER; text = ">"; textSize = 20f
-            setTypeface(null, Typeface.BOLD); setTextColor(Color.parseColor("#8E8E93"))
+            setTypeface(null, Typeface.BOLD); setTextColor(theme.pinyinLabelColor)
             visibility = View.GONE; setOnClickListener { nextCandidatePage() }
         }
         candidateArea?.addView(candidateNextBtn); root.addView(candidateArea)
@@ -105,15 +106,15 @@ class CtrlInputMethodService : InputMethodService() {
         val modeBar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp2px(48))
-            setBackgroundColor(Color.parseColor("#D1D3D9")); gravity = Gravity.CENTER_VERTICAL; setPadding(dp2px(12), 0, dp2px(12), 0)
+            setBackgroundColor(theme.modeBarBgColor); gravity = Gravity.CENTER_VERTICAL; setPadding(dp2px(12), 0, dp2px(12), 0)
         }
         modeBar.addView(TextView(this).apply {
-            text = "Ctrl"; textSize = 10f; setTextColor(Color.parseColor("#8E8E93"))
+            text = "Ctrl"; textSize = 10f; setTextColor(theme.brandTextColor)
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
         })
 
         val sep = { modeBar.addView(TextView(this).apply {
-            text = "|"; textSize = 12f; setTextColor(Color.parseColor("#A0A2AA"))
+            text = "|"; textSize = 12f; setTextColor(theme.modeSepColor)
             layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
         })}
 
@@ -142,6 +143,7 @@ class CtrlInputMethodService : InputMethodService() {
 
         root.addView(modeBar)
         keyboardView = CtrlKeyboardView(this).apply {
+            this.theme = theme
             layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
             onKeyAction = { key, isLong -> safeHandleKey(key, isLong) }
         }
@@ -158,8 +160,9 @@ class CtrlInputMethodService : InputMethodService() {
     }
 
     private fun refreshLangHighlight() {
-        val selColor = Color.parseColor("#007AFF"); val selBg = Color.parseColor("#D0D4DB")
-        val normColor = Color.parseColor("#6E6E78"); val normBg = Color.TRANSPARENT
+        val theme = KeyboardTheme.current(this)
+        val selColor = theme.modeActiveColor; val selBg = theme.modeActiveBgColor
+        val normColor = theme.modeInactiveColor; val normBg = Color.TRANSPARENT
 
         fun style(tv: TextView?, active: Boolean) {
             tv?.setTextColor(if (active) selColor else normColor)
@@ -332,8 +335,7 @@ class CtrlInputMethodService : InputMethodService() {
         candidatePage = (candidatePage + 1) % tp; renderCandidatePage()
     }
 
-    /** 选中候选词 — 部分消费拼音。
-     *  "nishi" 选 "拟"(只消耗 "ni") → 保留 "shi" 继续选字。 */
+    /** 选中候选词 — 部分消费拼音。 */
     private fun selectCandidate(index: Int) {
         if (index >= allCandidates.size) return
         val sel = allCandidates[index]
@@ -346,20 +348,16 @@ class CtrlInputMethodService : InputMethodService() {
 
         val consumed = tryConsumePartial(sel)
         if (consumed > 0 && consumed < pinyinBuffer.length) {
-            // 还有剩余拼音 → 保留并重新计算候选
             pinyinBuffer = pinyinBuffer.substring(consumed)
             scheduleCompute()
             return
         }
 
-        // 全部消费或无法确定 → 清空
         pinyinBuffer = ""
         allCandidates = emptyList()
         hideCandidates()
     }
 
-    /** 返回已消费的拼音字符数。0 = 无法确定（全清）。
-     *  优先使用分词+字典反查。此方法不依赖引擎状态，仅做纯数据查表。 */
     private fun tryConsumePartial(sel: String): Int {
         if (ktEngine == null || ktDict == null) return 0
         val seg = ktEngine!!.segment(pinyinBuffer)
@@ -367,7 +365,6 @@ class CtrlInputMethodService : InputMethodService() {
         if (completed.isEmpty()) return 0
 
         if (sel.length == 1) {
-            // 单字：在 completed 音节中逐个查找，找到即止
             var consumedLen = 0
             for (syl in completed) {
                 consumedLen += syl.length
@@ -376,7 +373,6 @@ class CtrlInputMethodService : InputMethodService() {
             }
             return 0
         } else {
-            // 多字词：按拼音前缀从短到长匹配 wordDict
             var consumedLen = 0
             for (i in completed.indices) {
                 consumedLen += completed[i].length

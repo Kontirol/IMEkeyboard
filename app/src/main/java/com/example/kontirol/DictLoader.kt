@@ -5,7 +5,7 @@ import android.content.res.AssetManager
 class DictLoader(assetManager: AssetManager?) {
 
     val charDict: Map<String, List<Pair<String, Long>>>
-    private val wordDict: Map<String, List<Pair<String, Long>>>
+    internal val wordDict: Map<String, List<Pair<String, Long>>>
 
     // 排序 key 列表，用于二分查找前缀匹配 → O(log N + results) 替代 O(N)
     private val wordKeysSorted: List<String>

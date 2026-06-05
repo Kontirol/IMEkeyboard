@@ -71,6 +71,14 @@ class GooglePinyinEngine(private val context: Context?) {
 
     fun choose(index: Int): Int = PinyinDecoderService.nativeImChoose(index)
     fun getFixedLen(): Int = PinyinDecoderService.nativeImGetFixedLen()
+
+    /** 原子操作：choose + 返回 fixedLen（已确认的拼音字节数）。
+     *  返回 0 表示引擎无法部分消费，需全清。 */
+    fun chooseAndGetFixedLen(index: Int): Int = synchronized(this) {
+        choose(index)
+        getFixedLen()
+    }
+
     fun deleteSearch(pos: Int, isPosInSplid: Boolean, clearFixedThisStep: Boolean): Int =
         PinyinDecoderService.nativeImDelSearch(pos, isPosInSplid, clearFixedThisStep)
     fun getSplStart(): IntArray? = PinyinDecoderService.nativeImGetSplStart()

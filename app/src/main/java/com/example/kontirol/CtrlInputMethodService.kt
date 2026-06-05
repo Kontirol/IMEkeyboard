@@ -26,6 +26,7 @@ class CtrlInputMethodService : InputMethodService() {
     private var currentMode = MODE_UYGHUR
     private var currentKeyboardType = "main"
     private var keyboardView: CtrlKeyboardView? = null
+    private var rootView: LinearLayout? = null
     private var candidateArea: LinearLayout? = null
     private var pinyinLabel: TextView? = null
     private var candidateTexts = arrayOfNulls<TextView>(CANDIDATES_PER_PAGE)
@@ -36,6 +37,7 @@ class CtrlInputMethodService : InputMethodService() {
     private var langLabelZh: TextView? = null
     private var langLabelEn: TextView? = null
     private var langLabelUg: TextView? = null
+    private var modeBarView: LinearLayout? = null
 
     // ===== 引擎 =====
     private var gEngine: GooglePinyinEngine? = null
@@ -70,6 +72,8 @@ class CtrlInputMethodService : InputMethodService() {
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL; setBackgroundColor(theme.bgColor)
         }
+        rootView = root
+
         candidateArea = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp2px(44))
@@ -108,6 +112,8 @@ class CtrlInputMethodService : InputMethodService() {
             layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp2px(48))
             setBackgroundColor(theme.modeBarBgColor); gravity = Gravity.CENTER_VERTICAL; setPadding(dp2px(12), 0, dp2px(12), 0)
         }
+        modeBarView = modeBar
+
         modeBar.addView(TextView(this).apply {
             text = "Ctrl"; textSize = 10f; setTextColor(theme.brandTextColor)
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
@@ -150,6 +156,30 @@ class CtrlInputMethodService : InputMethodService() {
         root.addView(keyboardView)
         loadKeyboardLayout(); refreshLangHighlight()
         return root
+    }
+
+    /** 重新读取主题并刷新所有视图颜色，使得从设置页切回后立即生效 */
+    private fun refreshTheme() {
+        val theme = KeyboardTheme.current(this)
+
+        rootView?.setBackgroundColor(theme.bgColor)
+
+        candidateArea?.setBackgroundColor(theme.candidateBgColor)
+        pinyinLabel?.setTextColor(theme.pinyinLabelColor)
+        candidateNextBtn?.setTextColor(theme.pinyinLabelColor)
+        for (tv in candidateTexts) { tv?.setTextColor(theme.candidateTextColor) }
+        // candidate separator (index 1 in candidateArea children)
+        candidateArea?.getChildAt(1)?.setBackgroundColor(theme.candidateSepColor)
+
+        modeBarView?.setBackgroundColor(theme.modeBarBgColor)
+        // "Ctrl" brand text (index 0), separators at indices 2, 4
+        (modeBarView?.getChildAt(0) as? TextView)?.setTextColor(theme.brandTextColor)
+        for (sepIdx in listOf(2, 4)) {
+            (modeBarView?.getChildAt(sepIdx) as? TextView)?.setTextColor(theme.modeSepColor)
+        }
+
+        keyboardView?.theme = theme
+        refreshLangHighlight()
     }
 
     private fun switchTo(mode: Int) {
@@ -393,7 +423,12 @@ class CtrlInputMethodService : InputMethodService() {
         hideCandidates()
     }
 
-    override fun onStartInputView(info: EditorInfo?, restarting: Boolean) { super.onStartInputView(info, restarting); loadKeyboardLayout() }
+    override fun onStartInputView(info: EditorInfo?, restarting: Boolean) {
+        super.onStartInputView(info, restarting)
+        refreshTheme()
+        loadKeyboardLayout()
+    }
+
     override fun onFinishInputView(finishingInput: Boolean) { super.onFinishInputView(finishingInput); commitPinyinBuffer() }
     override fun onDestroy() {
         computeThread.quitSafely()
